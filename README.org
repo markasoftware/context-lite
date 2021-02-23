@@ -1,0 +1,105 @@
+#+TITLE: Context Lite
+
+Context Lite is a Common Lisp library for writing methods that specialize on special variables,
+without the caller needing to know about which special variables the method uses. Different methods
+of the same generic function might specialize on different sets of special variables. For example, a
+web server might have a ~render-page~ function that generates the HTML for a page. The way that page
+is rendered may differ based on whether a user is logged in, whether the logged in user is an
+administrator, etc. The function that calls ~render-page~ may not want to worry about all the
+different pieces of information that ~render-page~ needs. With Context Lite, ~render-page~ would be
+able to specialize on say a ~*user*~ variable that is bound before ~render-page~. Context Lite is
+similar to [[https://github.com/pcostanza/contextl][ContextL]], but is substantially simpler, and works in terms of special variables rather
+than ContextL's "layers".
+
+* Installation
+  TODO. For now, copy ~context-lite.lisp~ into your source tree.
+* Examples
+
+  Here's an example of how failing to specify the argument precedence can lead to problems:
+
+  #+BEGIN_SRC lisp
+    (defclass user () ())
+    (defclass admin-user (user) ())
+
+    (defmethod* colors-alist () ()
+      '((background . "white")
+        (text . "black")
+        (restricted-links . "gray")))
+
+    (defmethod* colors-alist () ((*logged-in-user* user))
+      "Logged in users who are not admins should have red links"
+      '((background . "white")
+        (text . "black")
+        (restricted-links . "red")))
+
+    (defmethod* colors-alist () ((*logged-in-user* admin-user))
+      "Admin users should have blue links to restricted parts of the site"
+      (cons '(restricted-links . "blue")
+            (call-next-method)))
+
+    (defmethod* colors-alist () ((*color-scheme* (eql 'dark)))
+      (append '((background . "black")
+                (text . "white"))
+              (call-next-method))
+  #+END_SRC
+
+  The first method to be defined on ~colors-alist~ specializes on ~*logged-in-user*~, so
+  ~*logged-in-user*~ is placed before ~*color-scheme*~ in the argument precedence list. When an
+  admin user with a dark color scheme loads the site, the ~admin-user~ method will run, followed by
+  the ~user~ method, but the ~(eql 'dark)~ method won't run!
+
+  The quickest way to fix this is to add a ~defgeneric*~ form that puts ~*color-scheme*~ at a higher
+  precedence, but here's a more elegant way that doesn't depend on precedence at all:
+
+  #+BEGIN_SRC lisp
+    (defclass user () ())
+    (defclass admin-user (user) ())
+
+    (defmethod* colors-alist () ()
+      '((background . "white")
+        (text . "black")
+        (restricted-links . "gray")))
+
+    (defmethod* colors-alist () ((*logged-in-user* user))
+      "Logged in users who are not admins should have red links"
+      (cons '(restricted-links . "red")
+            (call-next-method)))
+
+    (defmethod* colors-alist () ((*logged-in-user* admin-user))
+      "Admin users should have blue links to restricted parts of the site"
+      (cons '(restricted-links . "blue")
+            (call-next-method)))
+
+    (defmethod* colors-alist () ((*color-scheme* (eql 'dark)))
+      (append '((background . "black")
+                (text . "white"))
+              (call-next-method))
+  #+END_SRC
+
+  Note that it does not matter here which order of precedence the different arguments get. If an
+  admin user has a dark color scheme, it does not matter whether the dark or admin method runs
+  before the other.
+
+  Precedence issues are not unique to Context Lite, but they're more insidious since methods might
+  not list all the special variables that /other/ methods specialize on in their lambda lists.
+* Performance
+  Performance is not my priority, but calling a generic* function should be reasonably fast. Here's
+  what happens when you call a generic* function:
+  1. Your code calls Context Lite's outer wrapper function.
+  2. The outer wrapper calls the CLOS generic function, passing in the necessary special variables.
+  3. CLOS does its presumably high performance method dispatch, and calls Context Lite's inner
+     wrapper function.
+  4. The inner wrapper calls the user-defined method* without any extra arguments.
+
+  To sum up, there are two extra function calls compared to a normal CLOS method call, and both
+  of the extra function calls are trivial, since the inner and outer wrappers are generated
+  specifically for the generic* function and the method* in question.
+* Gotchas
+  If a box is checked, then Context Lite handles the corresponding "gotcha" correctly to the best of
+  my knowledge.
+
+  + [ ] Declarations and docstrings
+  + [ ] implicit block around method body with correct name
+  + [ ] setf functions
+* Usage
+  Read the documentation strings of my functions and macros.
