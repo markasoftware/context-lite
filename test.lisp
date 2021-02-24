@@ -27,6 +27,12 @@ SOFTWARE.
 
 (in-package #:context-lite/test)
 
+(defvar *indicator* nil)
+(defvar *a* nil)
+(defvar *b* nil)
+
+(in-suite* context-lite)
+
 (test defmethod-no-special-vars
   "Create a generic* function using defmethod*, do not specialize on any special variables, and
       then run that method."
@@ -54,7 +60,6 @@ SOFTWARE.
 (test defmethod-only-special-vars
   "Specializing on only one special var"
   (fmakunbound 'do-the-thing)
-  (defvar *indicator* nil)
   (defmethod* do-the-thing () ()
     nil)
   (defmethod* do-the-thing () ((*indicator* (eql :active)))
@@ -66,7 +71,6 @@ SOFTWARE.
 (test defmethod-mixed
   "Specializing on both arguments and special variables"
   (fmakunbound 'do-the-thing)
-  (defvar *indicator* nil)
   (defmethod* do-the-thing (a) ()
     0)
   (defmethod* do-the-thing (a) ((*indicator* (eql :active)))
@@ -83,27 +87,25 @@ SOFTWARE.
   "Check whether precedence between special variable is, without intervention, equal to the
       order they were added."
   (fmakunbound 'do-the-thing)
-  (defvar *a* nil)
-  (defvar *b* nil)
   (defmethod* do-the-thing () ((*a* (eql 42)))
     :a)
   (defmethod* do-the-thing () ((*b* (eql 42)))
     :b)
 
-  (is (eq (do-the-thing 42 99) :a))
-  (is (eq (do-the-thing 99 42) :b))
-  (is (eq (do-the-thing 42 42) :a))
+  (is (eq :a (let ((*a* 42) (*b* 99)) (do-the-thing))))
+  (is (eq :b (let ((*a* 99) (*b* 42)) (do-the-thing))))
+  (is (eq :a (let ((*a* 42) (*b* 42)) (do-the-thing))))
 
-  (defmethod do-the-thing () ((*a* (eql 42)) (*b* (eql 42)))
+  (defmethod* do-the-thing () ((*a* (eql 42)) (*b* (eql 42)))
     :c)
 
-  (is (eq (do-the-thing 42 42)) :c))
+  (is (eq :c (let ((*a* 42) (*b* 42)) (do-the-thing)))))
 
 (test defmethod-call-next-method ;;FUCKFUCKFUCK. Can we wrap the next-methods in compute-discriminating-function?
   "call-next-method, with and without arguments"
   (fmakunbound 'do-the-thing)
   (defvar *indicator* nil)
-  (defmethod do-the-thing (c) ()
+  (defmethod* do-the-thing (c) ()
     c)
   (defmethod* do-the-thing (c) ((*indicator* number))
     (cons c (call-next-method (* c 3))))
@@ -115,18 +117,16 @@ SOFTWARE.
 (test defgeneric-special-precedence
   "Precedence overrides specified in initial defgeneric"
   (fmakunbound 'do-the-thing)
-  (defvar *a* nil)
-  (defvar *b* nil)
   (defmethod* do-the-thing () ((*a* (eql 42)))
     0)
   (defmethod* do-the-thing () ((*b* (eql 42)))
     1)
 
-  (is (= 0 (do-the-thing 42 42)))
+  (is (= 0 (let ((*a* 42) (*b* 42)) (do-the-thing))))
 
-  (defgeneric* do-the-thing (:special-variable-precedence-order *b* *a*))
+  (defgeneric* do-the-thing () (:special-variable-precedence-order *b* *a*))
 
-  (is (= 1 (do-the-thing 42 42))))
+  (is (= 1 (let ((*a* 42) (*b* 42)) (do-the-thing)))))
 
 (test advanced-normal-lambda-list
   "&optional, etc in the normal lambda list should not break special variables")
@@ -139,7 +139,7 @@ SOFTWARE.
     (defmethod* (setf do-the-thing) (new-value) ()
       42)
     ;; ensure-generic*-function? It's not really worth it, it's such a light wrapper.
-    (is (= 42 (setf (do-the-thing))))))
+    (is (= 42 (setf (do-the-thing) 2)))))
 
 (test defmethod-documentation)
 
@@ -154,3 +154,9 @@ SOFTWARE.
 
 (test defmethod-vanilla
   "Make sure the non-star DEFMETHOD still works.")
+
+(test defmethod-redefine)
+
+(test defmethod-qualifiers)
+
+(run! context-lite)

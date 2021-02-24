@@ -102,6 +102,12 @@
         (append old-order really-new-vars)
         old-order)))
 
+(defun lambda-list-required-arguments (lambda-list)
+  "Given a full lambda list, with specializers, return a list of the required arguments."
+  (loop for param-name in (c2mop:extract-lambda-list lambda-list)
+        until (member param-name '(&optional &key &rest &aux))
+        collect param-name))
+
 (defmethod c2mop:ensure-generic-function-using-class
     ((gf generic*-function) fn-name &rest options
      &key
@@ -125,7 +131,13 @@
     ;; change identity so this can't go wrong. This is to avoid n^2 performance with respect to the
     ;; number of methods, when defining a new method. Likely a premature optimization.
     (let ((original-sv-precedence-order special-variable-precedence-order-slot))
+      (when lambda-list-p
+        (setf normal-lambda-list lambda-list)
+        (setf normal-argument-precedence-order (lambda-list-required-arguments lambda-list)))
       (when argument-precedence-order-p
+        (assert (= (length argument-precedence-order)
+                   (length (lambda-list-required-arguments normal-lambda-list)))
+                () "argument-precedence-order must have the same length as the normal lambda list")
         (setf normal-argument-precedence-order argument-precedence-order))
       (when special-variables-p
         (setf special-variable-precedence-order-slot
@@ -137,8 +149,6 @@
               (combine-special-variable-precedence-ordered
                special-variable-precedence-order-slot
                special-variable-precedence-order)))
-      (when lambda-list-p
-        (setf normal-lambda-list lambda-list))
       (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
         (remove-all-wrapper-methods gf))
       (apply #'call-next-method gf fn-name
@@ -162,6 +172,8 @@
                                   lambda-list
                                 &allow-other-keys)
 
+  (unless argument-precedence-order
+    (setf argument-precedence-order (lambda-list-required-arguments lambda-list)))
   (apply #'call-next-method gf
          :normal-argument-precedence-order argument-precedence-order
          ;; TODO: default argument precedence order
@@ -199,6 +211,7 @@
         (lambda (args next-methods)
           (funcall method-function
                    (nthcdr (length gf-special-vars) args)
+                   ;; TODO: get the inner next-methods instead
                    next-methods))
         :lambda-list (append gf-special-vars
                              (c2mop:method-lambda-list method))
@@ -209,79 +222,24 @@
         ;; TODO: look into accessor methods
         )))))
 
-;; unfortunately, we have to reimplement defmethod from scratch
-;; (defmacro defmethod* (name &rest args &environment env)
-;;   (let (initargs
-;;         (gf-sym (gensym "gf")))
-;;     (flet ((next-arg ()
-;;              (setf args (cdr args)))
-;;            (push-initarg (name val)
-;;              (push val initargs)
-;;              (push name initargs))
-;;            (specializer-name->specializer-form (name)
-;;              (etypecase name
-;;                (symbol `(find-class ,name))
-;;                (cons
-;;                 (assert (eq (car name) 'eql) (name) "Invalid specializer ~a" name)
-;;                 (assert (= 2 (length name)) (name) "Invalid specializer ~a" name)
-;;                 `(c2mop:intern-eql-specializer ,(cadr name)))
-;;                ((eql t) t))))
-
-;;       ;; QUALIFIERS
-;;       (loop with qualifiers
-;;             while (not (listp (car args)))
-;;             do (progn
-;;                  (push (car args) qualifiers)
-;;                  (next-arg))
-;;             finally (when qualifiers
-;;                       (push-initarg :qualifiers `'(,@qualifiers))))
-;;       ;; NORMAL LAMBDA-LIST AND SPECIALIZERS
-;;       (push-initarg :lambda-list (c2mop:extract-lambda-list (car args)))
-;;       (push-initarg :specializers
-;;                     (mapcar #'specializer-name->specializer-form
-;;                             (c2mop:extract-specializer-names (car args))))
-;;       (next-arg)
-;;       ;; SPECIAL VARIABLE LAMBDA-LIST
-;;       (push-initarg :special-variables
-;;                     (loop for var-name in (c2mop:extract-lambda-list (car args))
-;;                           for specializer in (c2mop:extract-specializer-names (car args))
-;;                           for specializer-form = (specializer-name->specializer-form specializer)
-;;                           collect `(cons ',var-name ,specializer-form)))
-;;       (next-arg)
-;;       ;; DOCUMENTATION
-;;       (when (stringp (car args))
-;;         (push-initarg :documentation (car args))
-;;         (next-arg))
-;;       ;; DECLARATIONS
-;;       (loop with declarations
-;;             while (and (consp (car args))
-;;                        (eq 'declare (caar args)))
-;;             do (push (cdar args) `'(,@declarations))
-;;             finally (when declarations
-;;                       (push-initarg :declarations declarations)))
-;;       ;; BODY TODO
-
-;;       `(let ((,gf-sym (ensure-generic-function ',name))) ; TODO
-;;          (add-method
-;;           #',gf-sym
-;;           (make-instance (c2mop:generic-function-method-class ,gf-sym)
-;;                          ,@initargs))))))
-
 (defmacro defgeneric* (name lambda-list &rest options)
   ;; strategy: use defgeneric for all teh options supported by defgeneric, then call
   ;; ensure-generic-function to add special options
-  (let (special-options
-        (normal-options (list '(:generic-function-class generic*-function)
-                              '(:method-class method*))))
+
+  ;; TODO: allow custom generic-function-class and method-class
+  (let* ((normal-options (list '(:generic-function-class generic*-function)
+                               '(:method-class method*)))
+         (special-options (list :generic-function-class ''generic*-function
+                                :method-class ''method*)))
 
     (loop for option in options
+          do (break)
           do (ecase (car option)
                ((:argument-precedence-order 'declare :documentation :method-combination
-                 :method) ; TODO: disallow?
+                 :method)               ; TODO: disallow?
                 (push option normal-options))
                ((:special-variables :special-variable-precedence-order)
-                (push (loop for var in (cdr option)
-                            collect `',var)
+                (push `',(cdr option)
                       special-options)
                 (push (car option) special-options))))
              
@@ -299,11 +257,12 @@
               (assert (eq (car name) 'eql) (name) "Invalid specializer ~a" name)
               (assert (= 2 (length name)) (name) "Invalid specializer ~a" name)
               `(c2mop:intern-eql-specializer ,(cadr name))))))
-    (let ((temp-gf-name (gensym (concatenate 'string "temp-" (string name))))
-          (temp-method-var (gensym "temp-method"))
-          vanilla-args                   ; with special lambda list removed
-          special-variables              ; List of (symbol . specializer-form)
-          (gf-var (gensym (concatenate 'string "gf-" (string name)))))
+    (let* ((name-string (if (consp name) (string (car name)) (string name))) ; for setf fns
+           (temp-gf-name (gensym (concatenate 'string "TEMP-" name-string)))
+           (temp-method-var (gensym "temp-method"))
+           vanilla-args                 ; with special lambda list removed
+           special-variables            ; List of (symbol . specializer-form)
+           (gf-var (gensym (concatenate 'string "GF-" name-string))))
 
       (loop with state = :pre
             for arg in args
