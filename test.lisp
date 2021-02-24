@@ -108,9 +108,9 @@ SOFTWARE.
   (defmethod* do-the-thing (c) ()
     c)
   (defmethod* do-the-thing (c) ((*indicator* number))
-    (cons c (call-next-method (* c 3))))
+    (call-next-method (* c 3)))
   (defmethod* do-the-thing (c) ((*indicator* integer))
-    (cons c (call-next-method (+ c 7))))
+    (call-next-method (+ c 7)))
 
   (is (= 51 (let ((*indicator* 0)) (do-the-thing 10)))))
 
@@ -139,7 +139,7 @@ SOFTWARE.
     999)
 
   (is (= 172 (let ((*indicator* 5)) (do-the-thing 42 "hi"))))
-  (is (= 172 (let ((*indicator* :active)) (do-the-thing 19))))
+  (is (= 172 (let ((*indicator* 5)) (do-the-thing 19))))
   (is (= 999 (let ((*indicator* :active)) (do-the-thing 42 1)))))
 
 (test setf-function
@@ -172,4 +172,4 @@ SOFTWARE.
 
 (test defmethod-qualifiers)
 
-(run! context-lite)
+(run! 'context-lite)

@@ -211,16 +211,20 @@
         (lambda (args next-methods)
           (funcall method-function
                    (nthcdr (length gf-special-vars) args)
-                   ;; TODO: get the inner next-methods instead
-                   next-methods))
+                   ;; TODO: use hashtable or something to improve performance
+                   (loop for next-method in next-methods
+                         collect (loop for inner-method in (generic*-inner-methods gf)
+                                       for wrapper-method in (c2mop:generic-function-methods gf)
+                                       until (eq wrapper-method next-method)
+                                       finally (return inner-method)))))
         :lambda-list (append gf-special-vars
                              (c2mop:method-lambda-list method))
         :specializers (append (loop for gf-special-var in gf-special-vars
                                     collect (or (cdr (assoc gf-special-var method-special-vars))
                                                 (find-class t)))
-                              (c2mop:method-specializers method))
+                              (c2mop:method-specializers method)))
         ;; TODO: look into accessor methods
-        )))))
+        ))))
 
 (defmacro defgeneric* (name lambda-list &rest options)
   ;; strategy: use defgeneric for all teh options supported by defgeneric, then call
@@ -233,7 +237,6 @@
                                 :method-class ''method*)))
 
     (loop for option in options
-          do (break)
           do (ecase (car option)
                ((:argument-precedence-order 'declare :documentation :method-combination
                  :method)               ; TODO: disallow?
@@ -252,8 +255,8 @@
   ;; implementations defmethod logic. Then, create a method* on the actual generic function 
   (let* ((name-string (if (consp name) (string (car name)) (string name))) ; for setf fns
          (block-name (if (consp name) (cadr name) name))
-         (temp-gf-name (gensym (concatenate 'string "TEMP-" name-string)))
-         (temp-method-var (gensym "temp-method"))
+         (temp-gf-name (gensym name-string))
+         (temp-method-var (gensym "TEMP-METHOD"))
          vanilla-args                   ; with special lambda list removed
          special-variables              ; List of (symbol . specializer-form)
          (gf-var (gensym (concatenate 'string "GF-" name-string))))
