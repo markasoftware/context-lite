@@ -129,7 +129,18 @@ SOFTWARE.
   (is (= 1 (let ((*a* 42) (*b* 42)) (do-the-thing)))))
 
 (test advanced-normal-lambda-list
-  "&optional, etc in the normal lambda list should not break special variables")
+  "&optional, etc in the normal lambda list should not break special variables"
+  (fmakunbound 'do-the-thing)
+  (defmethod* do-the-thing (a &optional b) ((*indicator* number))
+    (declare (ignore b))
+    172)
+  (defmethod* do-the-thing ((a (eql 42)) &optional b) ((*indicator* (eql :active)))
+    (declare (ignore b))
+    999)
+
+  (is (= 172 (let ((*indicator* 5)) (do-the-thing 42 "hi"))))
+  (is (= 172 (let ((*indicator* :active)) (do-the-thing 19))))
+  (is (= 999 (let ((*indicator* :active)) (do-the-thing 42 1)))))
 
 (test setf-function
   "Test that all our functions work on setf functions"
@@ -146,14 +157,16 @@ SOFTWARE.
 (test defmethod-implicit-block
   "Check the defmethod body is wrapped in a correctly named block"
   (fmakunbound 'do-the-thing)
-  (defmethod* do-the-thing () ()
-    (return-from do-the-thing t)
-    nil)
+  ;; find-method doesn't really work, so i don't know why I bother checking this...
+  (let ((my-method
+          (defmethod* do-the-thing () ()
+            "Do things."
+            (declare (optimize (debug 3)))
+            (return-from do-the-thing t)
+            nil)))
+    (is (string= "Do things." (documentation my-method t))))
 
   (is (do-the-thing)))
-
-(test defmethod-vanilla
-  "Make sure the non-star DEFMETHOD still works.")
 
 (test defmethod-redefine)
 

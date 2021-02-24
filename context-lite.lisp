@@ -250,22 +250,26 @@
 (defmacro defmethod* (name &rest args)
   ;; strategy: create a vanilla method on a fresh generic function, so we can reuse most of the
   ;; implementations defmethod logic. Then, create a method* on the actual generic function 
-  (flet ((specializer-name->specializer-form (name)
-           (etypecase name
-             (symbol `(find-class ',name))
-             (cons
-              (assert (eq (car name) 'eql) (name) "Invalid specializer ~a" name)
-              (assert (= 2 (length name)) (name) "Invalid specializer ~a" name)
-              `(c2mop:intern-eql-specializer ,(cadr name))))))
-    (let* ((name-string (if (consp name) (string (car name)) (string name))) ; for setf fns
-           (temp-gf-name (gensym (concatenate 'string "TEMP-" name-string)))
-           (temp-method-var (gensym "temp-method"))
-           vanilla-args                 ; with special lambda list removed
-           special-variables            ; List of (symbol . specializer-form)
-           (gf-var (gensym (concatenate 'string "GF-" name-string))))
-
+  (let* ((name-string (if (consp name) (string (car name)) (string name))) ; for setf fns
+         (block-name (if (consp name) (cadr name) name))
+         (temp-gf-name (gensym (concatenate 'string "TEMP-" name-string)))
+         (temp-method-var (gensym "temp-method"))
+         vanilla-args                   ; with special lambda list removed
+         special-variables              ; List of (symbol . specializer-form)
+         (gf-var (gensym (concatenate 'string "GF-" name-string))))
+    (flet ((specializer-name->specializer-form (name)
+             (etypecase name
+               (symbol `(find-class ',name))
+               (cons
+                (assert (eq (car name) 'eql) (name) "Invalid specializer ~a" name)
+                (assert (= 2 (length name)) (name) "Invalid specializer ~a" name)
+                `(c2mop:intern-eql-specializer ,(cadr name)))))
+           (make-block (body)
+             `(block ,block-name ,@body)))
+    
       (loop with state = :pre
-            for arg in args
+            with found-doc
+            for (arg . rest) on args
             do (ecase state
                  (:pre
                   (push arg vanilla-args)
@@ -281,7 +285,15 @@
                               collect (cons var specializer-form)))
                   (setf state :post))
                  (:post
-                  (push arg vanilla-args))))
+                  (cond
+                    ((and (stringp arg) rest (not found-doc))
+                     (push arg vanilla-args)
+                     (setf found-doc t))
+                    ((and (consp arg) (eq 'declare (car arg)))
+                     (push arg vanilla-args))
+                    (t
+                     (push (make-block (cons arg rest)) vanilla-args)
+                     (return))))))
       (setf vanilla-args (nreverse vanilla-args))
 
       ;; TODO: correct block name
@@ -302,7 +314,8 @@
                                     :specializers (c2mop:method-specializers ,temp-method-var)
                                     :lambda-list (c2mop:method-lambda-list ,temp-method-var)
                                     :documentation (documentation ,temp-method-var t)
-                                    :function (c2mop:method-function ,temp-method-var)))))))
+                                    :function (c2mop:method-function ,temp-method-var)))
+         ,temp-method-var))))
 
 ;; help out SLIME and prevents compiler warnings
 (defmethod c2mop:generic-function-lambda-list ((gf generic*-function))
