@@ -204,7 +204,7 @@
       (call-next-method
        gf
        (make-instance
-        'standard-method
+        'method*
         :documentation (documentation method t)
         :qualifiers (method-qualifiers method)
         :function
@@ -224,7 +224,11 @@
                                                 (find-class t)))
                               (c2mop:method-specializers method)))
         ;; TODO: look into accessor methods
-        ))))
+       )
+      ;; in clisp, the function that's actually installed as the funcallable-instance-function is a
+      ;; thin wrapper around the discriminating function. This wrapper checks the number of
+      ;; arguments passed, which breaks us.
+      (c2mop:set-funcallable-instance-function gf (c2mop:compute-discriminating-function gf)))))
 
 (defmacro defgeneric* (name lambda-list &rest options)
   ;; strategy: use defgeneric for all teh options supported by defgeneric, then call
@@ -320,7 +324,8 @@
                                     :function (c2mop:method-function ,temp-method-var)))
          ,temp-method-var))))
 
-;; help out SLIME and prevents compiler warnings
+;; help out SLIME and prevents compiler warnings. Clisp gets angery if you override this though.
+#-clisp
 (defmethod c2mop:generic-function-lambda-list ((gf generic*-function))
   (generic*-normal-lambda-list gf))
 
