@@ -34,30 +34,34 @@
 (define-condition special-lambda-list-error (error) ()
   (:documentation "Invalid special lambda list syntax."))
 
-(defclass generic*-function (c2mop:standard-generic-function)
-  ((normal-lambda-list
+(defclass generic*-function ()
+  ((name
+    :accessor generic*-name
+    :initarg :name
+    :initform (error "generic* functions need a :name"))
+   (normal-lambda-list
     :accessor generic*-normal-lambda-list
-    :initarg :normal-lambda-list
     :initform nil)
    (normal-argument-precedence-order
     :accessor generic*-normal-argument-precedence-order
-    :initarg :normal-argument-precedence-order)
+    :initform nil)
    (special-variable-precedence-order
     :accessor generic*-special-variable-precedence-order
-    :initarg :special-variable-precedence-order
     :initform nil)
    (inner-methods
     :accessor generic*-inner-methods
-    :initform nil))
+    :initform nil)
+   (inner-gf
+    :accessor generic*-gf))
   (:metaclass c2mop:funcallable-standard-class))
 
 (defmethod remove-all-wrapper-methods ((gf generic*-function))
-  (loop for method in (c2mop:generic-function-methods gf)
-        do (remove-method gf method)))
+  (loop for method in (c2mop:generic-function-methods (generic*-gf gf))
+        do (remove-method (generic*-gf gf) method)))
 
 (defmethod add-all-wrapper-methods ((gf generic*-function))
   (loop for inner-method in (generic*-inner-methods gf)
-        do (add-method gf inner-method)))
+        do (add-method* gf inner-method)))
 
 (defmethod generic*-inner-precedence-order ((gf generic*-function))
   (append (generic*-normal-argument-precedence-order gf)
@@ -72,15 +76,35 @@
     where specializer is either a class metaobject or an eql-specializer (just like a normal method
     specializer)")))
 
-(defmethod c2mop:compute-discriminating-function ((gf generic*-function))
-  (let ((inner-discriminating-function (call-next-method)))
+(defmacro accessor-transaction (accessors instance &body body)
+  "Save the value of the accessors before executing body. If an error is signaled during body,
+  revert the accessors back to their saved values. Each accessor must be a symbol naming an accessor
+  function."
+  (let ((instance-var (gensym "INSTANCE"))
+        (saved-value-list-var (gensym "SAVED-VALUE-LIST")))
+    `(let* ((,instance-var ,instance)
+            (,saved-value-list-var (list ,@(loop for accessor in accessors
+                                                 do (assert (symbolp accessor))
+                                                 collect `(,accessor ,instance-var)))))
+       (handler-bind
+           ((error (lambda (err)
+                     (declare (ignore err))
+                     ,@(loop for accessor in accessors
+                             nconc `((setf (,accessor ,instance-var) (car ,saved-value-list-var))
+                                     (setf ,saved-value-list-var (cdr ,saved-value-list-var)))))))
+         (progn ,@body)))))
+
+(defmethod generic*-install-discriminating-function ((gf generic*-function))
+  (let ((inner-discriminating-function (c2mop:compute-discriminating-function (generic*-gf gf))))
     ;; TODO: should I use (compile)?
     ;; TODO: is there any reason/way to explicitly list the args instead of using &rest?
-    (compile nil `(lambda (&rest args)
-                    (apply ,inner-discriminating-function
-                           ;; TODO: specialize on a variable simply being bound and non-nil?
-                           ,@(generic*-special-variable-precedence-order gf)
-                           args)))))
+    (eval `(c2mop:set-funcallable-instance-function
+            ,gf
+            (lambda (&rest args)
+              (apply ,inner-discriminating-function
+                     ;; TODO: specialize on a variable simply being bound and non-nil?
+                     ,@(generic*-special-variable-precedence-order gf)
+                     args))))))
 
 (defun combine-special-variable-precedence-ordered (old-order new-order)
   (cond
@@ -108,13 +132,15 @@
         until (member param-name '(&optional &key &rest &aux))
         collect param-name))
 
-(defmethod c2mop:ensure-generic-function-using-class
+(defmethod ensure-generic*-function-using-class
     ((gf generic*-function) fn-name &rest options
      &key
        (argument-precedence-order nil argument-precedence-order-p)
        (special-variable-precedence-order nil special-variable-precedence-order-p)
        (special-variables nil special-variables-p)
        (lambda-list nil lambda-list-p)
+       (generic-function-class 'standard-generic-function)
+       (method-class 'standard-method)
      &allow-other-keys)
 
   (with-accessors ((normal-argument-precedence-order
@@ -122,7 +148,9 @@
                    (special-variable-precedence-order-slot
                     generic*-special-variable-precedence-order)
                    (normal-lambda-list
-                    generic*-normal-lambda-list))
+                    generic*-normal-lambda-list)
+                   (fn-name-slot
+                    fn-name))
       gf
 
     ;; use the identity of the special variable list to determine, later, whether or not we need to
@@ -131,7 +159,10 @@
     ;; change identity so this can't go wrong. This is to avoid n^2 performance with respect to the
     ;; number of methods, when defining a new method. Likely a premature optimization.
     (let ((original-sv-precedence-order special-variable-precedence-order-slot))
-      (when lambda-list-p
+      (setf (generic*-name gf) fn-name)
+      (when lambda-list-p ;; TODO: if the lambda list is invalid, the error will occur during the
+        ;; later ensure-generic-function-using-class call, but the lambda list
+        ;; will have already been permanently stored! Same goes for other params.
         (setf normal-lambda-list lambda-list)
         (setf normal-argument-precedence-order (lambda-list-required-arguments lambda-list)))
       (when argument-precedence-order-p
@@ -151,60 +182,63 @@
                special-variable-precedence-order)))
       (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
         (remove-all-wrapper-methods gf))
-      (apply #'call-next-method gf fn-name
+      (apply #'c2mop:ensure-generic-function-using-class
+             (generic*-gf gf) (c2mop:generic-function-name (generic*-gf gf))
              :argument-precedence-order (append normal-argument-precedence-order
                                                 special-variable-precedence-order-slot)
              :lambda-list (append special-variable-precedence-order-slot
                                   normal-lambda-list)
-             :generic-function-class (or (getf options :generic-function-class) 'generic*-function)
-             :method-class (or (getf options :method-class) 'method*)
+             :generic-function-class generic-function-class
+             :method-class method-class
              (remove-from-plist options
                                 :argument-precedence-order
                                 :special-variable-precedence-order
                                 :special-variables
+                                :generic-function-class
                                 :lambda-list))
       (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
         (add-all-wrapper-methods gf))
-      gf)))
+      gf)
 
-(defmethod initialize-instance ((gf generic*-function) &rest initargs
-                                &key argument-precedence-order special-variable-precedence-order
-                                  lambda-list
-                                &allow-other-keys)
+    ;; symbol not bound yet
+    (setf (fdefinition fn-name) gf)))
 
-  (unless argument-precedence-order
-    (setf argument-precedence-order (lambda-list-required-arguments lambda-list)))
-  (apply #'call-next-method gf
-         :normal-argument-precedence-order argument-precedence-order
-         ;; TODO: default argument precedence order
-         :argument-precedence-order (append argument-precedence-order
-                                            special-variable-precedence-order)
-         :normal-lambda-list lambda-list
-         :lambda-list (append special-variable-precedence-order lambda-list)
-         (remove-from-plist initargs
-                            :argument-precedence-order
-                            :special-variable-precedence-order
-                            :lambda-list)))
+(defun ensure-generic*-function (fn-name &rest initargs)
+  ;; TODO: custom class?
+  (unless (and (fboundp fn-name) (subtypep (type-of (fdefinition fn-name)) 'generic*-function))
+    (setf (fdefinition fn-name) (make-instance 'generic*-function :name fn-name)))
+  (apply 'ensure-generic*-function-using-class
+         (fdefinition fn-name) fn-name initargs))
+
+(defmethod initialize-instance :after
+    ((gf generic*-function) &key name)
+
+  (setf (generic*-gf gf) (ensure-generic-function
+                          (gensym (string (if (consp name) (cadr name) name)))
+                          ;; sbcl loses its shit if you don't specify the lambda list, presumably
+                          ;; because defgeneric always provides :lambda-list
+                          :lambda-list nil))
+  (generic*-install-discriminating-function gf))
 
 ;; (defmethod reinitialize-instance ((gf generic*-function) &rest args)
 ;;   ;; TODO properly
 ;;   (call-next-method))
 
-(defmethod add-method ((gf generic*-function) (method method*))
+(defmethod add-method* ((gf generic*-function) (method method*))
   ;; here's where we wrap the method* into a method
   (let ((method-special-vars (method*-special-variables method))
         (method-function (c2mop:method-function method)))
     ;; first, make sure that the generic function knows about all our special variables
-    (c2mop:ensure-generic-function-using-class
-     gf (c2mop:generic-function-name gf) :special-variables (mapcar #'car method-special-vars))
+    (ensure-generic*-function-using-class
+     gf (generic*-name gf) :special-variables (mapcar #'car method-special-vars))
     (unless (member method (generic*-inner-methods gf))
       (push method (generic*-inner-methods gf)))
     ;; now, wrap the method into a standard-method and add it normally
     (let ((gf-special-vars (generic*-special-variable-precedence-order gf)))
-      (call-next-method
-       gf
+      (add-method
+       (generic*-gf gf)
        (make-instance
-        'method*
+        'standard-method
         :documentation (documentation method t)
         :qualifiers (method-qualifiers method)
         :function
@@ -212,11 +246,15 @@
           (funcall method-function
                    (nthcdr (length gf-special-vars) args)
                    ;; TODO: use hashtable or something to improve performance
-                   (loop for next-method in next-methods
-                         collect (loop for inner-method in (generic*-inner-methods gf)
-                                       for wrapper-method in (c2mop:generic-function-methods gf)
-                                       until (eq wrapper-method next-method)
-                                       finally (return inner-method)))))
+;                   (loop for next-method in next-methods
+;                         collect (loop for inner-method in (generic*-inner-methods gf)
+;                                       for wrapper-method
+;                                         in (c2mop:generic-function-methods (generic*-gf gf))
+;                                       until (eq wrapper-method next-method)
+;                                       finally (return inner-method)))
+                   next-methods
+
+                   ))
         :lambda-list (append gf-special-vars
                              (c2mop:method-lambda-list method))
         :specializers (append (loop for gf-special-var in gf-special-vars
@@ -225,40 +263,37 @@
                               (c2mop:method-specializers method)))
         ;; TODO: look into accessor methods
        )
-      ;; in clisp, the function that's actually installed as the funcallable-instance-function is a
-      ;; thin wrapper around the discriminating function. This wrapper checks the number of
-      ;; arguments passed, which breaks us.
-      (c2mop:set-funcallable-instance-function gf (c2mop:compute-discriminating-function gf)))))
+      (generic*-install-discriminating-function gf)
+      method)))
 
 (defmacro defgeneric* (name lambda-list &rest options)
   ;; strategy: use defgeneric for all teh options supported by defgeneric, then call
   ;; ensure-generic-function to add special options
 
   ;; TODO: allow custom generic-function-class and method-class
-  (let* ((normal-options (list '(:generic-function-class generic*-function)
-                               '(:method-class method*)))
-         (special-options (list :generic-function-class ''generic*-function
-                                :method-class ''method*)))
-
+  (let ((ensure-options (list :name (if (consp name) `',(cadr name) `',name)
+                              :lambda-list `',lambda-list))
+        declarations)
     (loop for option in options
           do (ecase (car option)
-               ((:argument-precedence-order 'declare :documentation :method-combination
-                 :method)               ; TODO: disallow?
-                (push option normal-options))
-               ((:special-variables :special-variable-precedence-order)
-                (push `',(cdr option)
-                      special-options)
-                (push (car option) special-options))))
+               ((:special-variables :special-variable-precedence-order :argument-precedence-order
+                                    :documentation :method-combination)
+                (push `',(cdr option) ensure-options)
+                (push (car option) ensure-options))
+               ('declare
+                (setf declarations (nconc declarations (cdr option))))))
+
+    (when declarations
+      (push `',declarations ensure-options)
+      (push :declarations ensure-options))
              
-    `(progn
-       (defgeneric ,name ,lambda-list ,@normal-options)
-       (ensure-generic-function ',name ,@special-options))))
+    `(ensure-generic*-function ',name ,@ensure-options)))
 
 (defmacro defmethod* (name &rest args)
   ;; strategy: create a vanilla method on a fresh generic function, so we can reuse most of the
-  ;; implementations defmethod logic. Then, create a method* on the actual generic function 
-  (let* ((name-string (if (consp name) (string (car name)) (string name))) ; for setf fns
-         (block-name (if (consp name) (cadr name) name))
+  ;; implementations defmethod logic. Then, create a method* on the generic* object
+  (let* ((block-name (if (consp name) (cadr name) name))
+         (name-string (string block-name))
          (temp-gf-name (gensym name-string))
          (temp-method-var (gensym "TEMP-METHOD"))
          vanilla-args                   ; with special lambda list removed
@@ -303,31 +338,23 @@
                      (return))))))
       (setf vanilla-args (nreverse vanilla-args))
 
-      ;; TODO: correct block name
       `(let* ((,temp-method-var (defmethod ,temp-gf-name ,@vanilla-args))
-              (,gf-var (ensure-generic-function
+              (,gf-var (ensure-generic*-function
                         ',name
                         :lambda-list (c2mop:generic-function-lambda-list
                                       (symbol-function ',temp-gf-name))
-                        :special-variables '(,@(mapcar #'car special-variables))
-                        :generic-function-class 'generic*-function
-                        :method-class 'method*)))
-         (add-method ,gf-var
-                     (make-instance (c2mop:generic-function-method-class ,gf-var)
-                                    :special-variables
-                                    (list ,@(loop for (var . specializer-form) in special-variables
-                                                  collect `(cons ',var ,specializer-form)))
-                                    :qualifiers (method-qualifiers ,temp-method-var)
-                                    :specializers (c2mop:method-specializers ,temp-method-var)
-                                    :lambda-list (c2mop:method-lambda-list ,temp-method-var)
-                                    :documentation (documentation ,temp-method-var t)
-                                    :function (c2mop:method-function ,temp-method-var)))
-         ,temp-method-var))))
-
-;; help out SLIME and prevents compiler warnings. Clisp gets angery if you override this though.
-#-clisp
-(defmethod c2mop:generic-function-lambda-list ((gf generic*-function))
-  (generic*-normal-lambda-list gf))
+                        :special-variables '(,@(mapcar #'car special-variables)))))
+         (add-method*
+          ,gf-var
+          (make-instance 'method*
+                         :special-variables
+                         (list ,@(loop for (var . specializer-form) in special-variables
+                                       collect `(cons ',var ,specializer-form)))
+                         :qualifiers (method-qualifiers ,temp-method-var)
+                         :specializers (c2mop:method-specializers ,temp-method-var)
+                         :lambda-list (c2mop:method-lambda-list ,temp-method-var)
+                         :documentation (documentation ,temp-method-var t)
+                         :function (c2mop:method-function ,temp-method-var)))))))
 
 ;; copied from Alexandria
 (defun remove-from-plist (plist &rest keys)
