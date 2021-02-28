@@ -52,12 +52,17 @@
     :accessor generic*-inner-methods
     :initform nil)
    (inner-gf
-    :accessor generic*-gf))
+    :accessor generic*-gf)
+   (wrapper-method-table
+    :accessor generic*-wrapper-method-table
+    :initform (make-hash-table)))
   (:metaclass c2mop:funcallable-standard-class))
 
 (defmethod remove-all-wrapper-methods ((gf generic*-function))
   (loop for method in (c2mop:generic-function-methods (generic*-gf gf))
-        do (remove-method (generic*-gf gf) method)))
+        do (remove-method (generic*-gf gf) method))
+  ;; this is the only point where wrapper methods are removed
+  (setf (generic*-wrapper-method-table gf) (make-hash-table)))
 
 (defmethod add-all-wrapper-methods ((gf generic*-function))
   (loop for inner-method in (generic*-inner-methods gf)
@@ -213,7 +218,7 @@
 (defmethod initialize-instance :after
     ((gf generic*-function) &key name)
 
-  (setf (generic*-gf gf) (ensure-generic-function
+  (setf (generic*-gf gf) (c2mop:ensure-generic-function
                           (gensym (string (if (consp name) (cadr name) name)))
                           ;; sbcl loses its shit if you don't specify the lambda list, presumably
                           ;; because defgeneric always provides :lambda-list
@@ -224,45 +229,70 @@
 ;;   ;; TODO properly
 ;;   (call-next-method))
 
+#-(or ccl abcl)
+(defmethod wrap-method-function ((gf generic*-function) (method method*) num-special-vars)
+  (let ((method-function (c2mop:method-function method)))
+    (lambda (args nexts)
+      (funcall method-function
+               (nthcdr num-special-vars args)
+               (mapcar (lambda (next) (gethash next (generic*-wrapper-method-table gf))) nexts)))))
+
+;; minor amop violation from abcl: method-functions take a single function where the next-methods
+;; argument would normally go, and this function (which they perhaps erroneously call an "effective
+;; method") handles calling all of the next methods in turn.
+#+abcl
+(defmethod wrap-method-function ((gf generic*-function) (method method*) num-special-vars)
+  (let ((method-function (c2mop:method-function method)))
+    (compile nil `(lambda (args next-emfun)
+                    (funcall ,method-function
+                             (nthcdr ,num-special-vars args)
+                             (lambda (&rest rest)
+                               (apply
+                                next-emfun
+                                ,@(loop for var in (generic*-special-variable-precedence-order gf)
+                                        collect `',var)
+                                rest)))))))
+
+;; HACK. CCL's methods get some special info by way of an &method parameter. I'm not sure exactly
+;; the nature of this parameter, but it seems like it gets filled out incorrectly on the inner
+;; methods, so we can do apply-with-method-context to override the parameter with whatever was
+;; passed to the wrapper method.
+#+ccl
+(defmethod wrap-method-function ((gf generic*-function) (method method*) num-special-vars)
+  (let ((method-function (c2mop:method-function method)))
+    (lambda (ccl::&method methvar &rest args)
+      (ccl::apply-with-method-context methvar method-function (nthcdr num-special-vars args)))))
+
 (defmethod add-method* ((gf generic*-function) (method method*))
   ;; here's where we wrap the method* into a method
-  (let ((method-special-vars (method*-special-variables method))
-        (method-function (c2mop:method-function method)))
+  (let ((method-special-vars (method*-special-variables method)))
     ;; first, make sure that the generic function knows about all our special variables
     (ensure-generic*-function-using-class
      gf (generic*-name gf) :special-variables (mapcar #'car method-special-vars))
     (unless (member method (generic*-inner-methods gf))
       (push method (generic*-inner-methods gf)))
     ;; now, wrap the method into a standard-method and add it normally
-    (let ((gf-special-vars (generic*-special-variable-precedence-order gf)))
-      (add-method
-       (generic*-gf gf)
-       (make-instance
-        'standard-method
-        :documentation (documentation method t)
-        :qualifiers (method-qualifiers method)
-        :function
-        (lambda (args next-methods)
-          (funcall method-function
-                   (nthcdr (length gf-special-vars) args)
-                   ;; TODO: use hashtable or something to improve performance
-;                   (loop for next-method in next-methods
-;                         collect (loop for inner-method in (generic*-inner-methods gf)
-;                                       for wrapper-method
-;                                         in (c2mop:generic-function-methods (generic*-gf gf))
-;                                       until (eq wrapper-method next-method)
-;                                       finally (return inner-method)))
-                   next-methods
-
-                   ))
-        :lambda-list (append gf-special-vars
-                             (c2mop:method-lambda-list method))
-        :specializers (append (loop for gf-special-var in gf-special-vars
-                                    collect (or (cdr (assoc gf-special-var method-special-vars))
-                                                (find-class t)))
-                              (c2mop:method-specializers method)))
-        ;; TODO: look into accessor methods
-       )
+    (let* ((gf-special-vars (generic*-special-variable-precedence-order gf))
+           (wrapper-method
+             (make-instance
+              'standard-method
+              :documentation (documentation method t)
+              :qualifiers (method-qualifiers method)
+              :function (wrap-method-function gf method (length gf-special-vars))
+              :lambda-list (append gf-special-vars (c2mop:method-lambda-list method))
+              :specializers
+              (append (loop for gf-special-var in gf-special-vars
+                            collect (or (cdr (assoc gf-special-var method-special-vars))
+                                        (find-class t)))
+                      (c2mop:method-specializers method)))))
+      #-ecl
+      (setf (gethash wrapper-method (generic*-wrapper-method-table gf)) method)
+      #+ecl
+      (setf (gethash (c2mop:method-function wrapper-method) (generic*-wrapper-method-table gf))
+            (c2mop:method-function method))
+      (add-method (generic*-gf gf) wrapper-method
+                  ;; TODO: look into accessor methods
+                  )
       (generic*-install-discriminating-function gf)
       method)))
 
@@ -295,10 +325,9 @@
   (let* ((block-name (if (consp name) (cadr name) name))
          (name-string (string block-name))
          (temp-gf-name (gensym name-string))
-         (temp-method-var (gensym "TEMP-METHOD"))
          vanilla-args                   ; with special lambda list removed
          special-variables              ; List of (symbol . specializer-form)
-         (gf-var (gensym (concatenate 'string "GF-" name-string))))
+         )
     (flet ((specializer-name->specializer-form (name)
              (etypecase name
                (symbol `(find-class ',name))
@@ -306,9 +335,23 @@
                 (assert (eq (car name) 'eql) (name) "Invalid specializer ~a" name)
                 (assert (= 2 (length name)) (name) "Invalid specializer ~a" name)
                 `(c2mop:intern-eql-specializer ,(cadr name)))))
+           #+ccl
+           (make-block (body)
+             `(flet
+                  ((call-next-method (&rest args)
+                     (if args
+                         (apply #'call-next-method
+                                ;; TODO: performance?
+                                (append
+                                 (mapcar #'symbol-value
+                                         (generic*-special-variable-precedence-order actual-gf))
+                                 args))
+                         (call-next-method))))
+                (block ,block-name ,@body)))
+           #-ccl
            (make-block (body)
              `(block ,block-name ,@body)))
-    
+      
       (loop with state = :pre
             with found-doc
             for (arg . rest) on args
@@ -335,26 +378,35 @@
                      (push arg vanilla-args))
                     (t
                      (push (make-block (cons arg rest)) vanilla-args)
-                     (return))))))
-      (setf vanilla-args (nreverse vanilla-args))
+                     (return)))))))
+    (setf vanilla-args (nreverse vanilla-args))
 
-      `(let* ((,temp-method-var (defmethod ,temp-gf-name ,@vanilla-args))
-              (,gf-var (ensure-generic*-function
-                        ',name
-                        :lambda-list (c2mop:generic-function-lambda-list
-                                      (symbol-function ',temp-gf-name))
-                        :special-variables '(,@(mapcar #'car special-variables)))))
-         (add-method*
-          ,gf-var
-          (make-instance 'method*
-                         :special-variables
-                         (list ,@(loop for (var . specializer-form) in special-variables
-                                       collect `(cons ',var ,specializer-form)))
-                         :qualifiers (method-qualifiers ,temp-method-var)
-                         :specializers (c2mop:method-specializers ,temp-method-var)
-                         :lambda-list (c2mop:method-lambda-list ,temp-method-var)
-                         :documentation (documentation ,temp-method-var t)
-                         :function (c2mop:method-function ,temp-method-var)))))))
+    ;; we have to create the gf-var before the temp method, even though we update the gf-var right
+    ;; afterwards, because the method refers to the gf-var in its call-next-method binding.
+    `(let* ((actual-gf (ensure-generic*-function ',name))
+            (temp-method (defmethod ,temp-gf-name ,@vanilla-args))
+            (actual-gf
+              (ensure-generic*-function
+               ',name
+               :lambda-list (c2mop:generic-function-lambda-list
+                             (symbol-function ',temp-gf-name))
+               :special-variables '(,@(mapcar #'car special-variables))))
+            (actual-method 
+              (add-method*
+               actual-gf
+               (make-instance 'method*
+                              :special-variables
+                              (list ,@(loop for (var . specializer-form) in special-variables
+                                            collect `(cons ',var ,specializer-form)))
+                              :qualifiers (method-qualifiers temp-method)
+                              :specializers (c2mop:method-specializers temp-method)
+                              :lambda-list (c2mop:method-lambda-list temp-method)
+                              :documentation (documentation temp-method t)
+                              :function (c2mop:method-function temp-method)))))
+       ;; CCL doesn't use the documentation initarg, ffs
+       (setf (documentation actual-method t)
+             (documentation temp-method t))
+       actual-method)))
 
 ;; copied from Alexandria
 (defun remove-from-plist (plist &rest keys)

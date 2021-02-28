@@ -101,18 +101,18 @@ SOFTWARE.
 
   (is (eq :c (let ((*a* 42) (*b* 42)) (do-the-thing)))))
 
-(test defmethod-call-next-method ;;FUCKFUCKFUCK. Can we wrap the next-methods in compute-discriminating-function?
+(test defmethod-call-next-method
   "call-next-method, with and without arguments"
   (fmakunbound 'do-the-thing)
   (defvar *indicator* nil)
   (defmethod* do-the-thing (c) ()
     c)
   (defmethod* do-the-thing (c) ((*indicator* number))
-    (call-next-method (* c 3)))
+    (call-next-method))
   (defmethod* do-the-thing (c) ((*indicator* integer))
     (call-next-method (+ c 7)))
 
-  (is (= 51 (let ((*indicator* 0)) (do-the-thing 10)))))
+  (is (= 17 (let ((*indicator* 0)) (do-the-thing 10)))))
 
 (test defgeneric-special-precedence
   "Precedence overrides specified in initial defgeneric"
@@ -145,14 +145,11 @@ SOFTWARE.
 (test setf-function
   "Test that all our functions work on setf functions"
   (fmakunbound '(setf do-the-thing))
-  (let (set-me)
-    (defgeneric* (setf do-the-thing) (new-value))
-    (defmethod* (setf do-the-thing) (new-value) ()
-      42)
-    ;; ensure-generic*-function? It's not really worth it, it's such a light wrapper.
-    (is (= 42 (setf (do-the-thing) 2)))))
-
-(test defmethod-documentation)
+  (defgeneric* (setf do-the-thing) (new-value))
+  (defmethod* (setf do-the-thing) (new-value) ()
+    42)
+  ;; ensure-generic*-function? It's not really worth it, it's such a light wrapper.
+  (is (= 42 (setf (do-the-thing) 2))))
 
 (test defmethod-implicit-block
   "Check the defmethod body is wrapped in a correctly named block"
@@ -172,4 +169,28 @@ SOFTWARE.
 
 (test defmethod-qualifiers)
 
+(test defmethod-invalid-lambda-list
+  "Check that, when we provide a normal lambda list that's incompatible with ")
+
+(test different-method-combination
+  "Check that it still works when the method combination is not default."
+  ;; could be a problem because we first define the method on a fresh generic, which will call the
+  ;; wrong make-method-lambda.
+  )
+
 (run! 'context-lite)
+
+;; (defun crappy-benchmark (num-vars num-methods num-trials)
+;;   (assert (plusp num-vars))
+;;   (assert (plusp num-methods))
+;;   (assert (plusp num-trials))
+;;   (let ((method-name (gensym))
+;;         (special-vars (loop repeat num-vars
+;;                             for var = (gensym)
+;;                             do (defvar var nil)
+;;                             collect var)))
+;;     (loop repeat num-methods
+;;           do (eval `(defmethod ,method-name)))
+
+    
+;;     (loop repeat num-trials)))
