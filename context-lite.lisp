@@ -328,6 +328,7 @@
          (temp-gf-name (gensym name-string))
          vanilla-args                   ; with special lambda list removed
          special-variables              ; List of (symbol . specializer-form)
+         (actual-gf-var (gensym name-string))
          )
     (flet ((specializer-name->specializer-form (name)
              (etypecase name
@@ -384,8 +385,10 @@
 
     ;; we have to create the gf-var before the temp method, even though we update the gf-var right
     ;; afterwards, because the method refers to the gf-var in its call-next-method binding.
-    `(let* ((actual-gf (ensure-generic*-function ',name))
+    `(let* ((,actual-gf-var (ensure-generic*-function ',name))
             (temp-method (defmethod ,temp-gf-name ,@vanilla-args))
+            ;; different var name because if we shadow the actual-gf-var, the compiler might detect
+            ;; that the last one was never used and issue a warning.
             (actual-gf
               (ensure-generic*-function
                ',name
@@ -394,7 +397,7 @@
                :special-variables '(,@(mapcar #'car special-variables))))
             (actual-method 
               (add-method*
-               actual-gf
+               ,actual-gf-var
                (make-instance 'method*
                               :special-variables
                               (list ,@(loop for (var . specializer-form) in special-variables
@@ -404,6 +407,8 @@
                               :lambda-list (c2mop:method-lambda-list temp-method)
                               :documentation (documentation temp-method t)
                               :function (c2mop:method-function temp-method)))))
+       (declare (ignorable ,actual-gf-var)
+                (ignore actual-gf))
        ;; CCL doesn't use the documentation initarg, ffs
        (setf (documentation actual-method t)
              (documentation temp-method t))
