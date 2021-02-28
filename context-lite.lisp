@@ -239,19 +239,20 @@
 
 ;; minor amop violation from abcl: method-functions take a single function where the next-methods
 ;; argument would normally go, and this function (which they perhaps erroneously call an "effective
-;; method") handles calling all of the next methods in turn.
+;; method") handles calling all of the next methods in turn. The "emfun" takes a list of arguments
+;; as its argument.
 #+abcl
 (defmethod wrap-method-function ((gf generic*-function) (method method*) num-special-vars)
   (let ((method-function (c2mop:method-function method)))
     (compile nil `(lambda (args next-emfun)
                     (funcall ,method-function
                              (nthcdr ,num-special-vars args)
-                             (lambda (&rest rest)
-                               (apply
+                             (lambda (args)
+                               (funcall
                                 next-emfun
-                                ,@(loop for var in (generic*-special-variable-precedence-order gf)
-                                        collect `',var)
-                                rest)))))))
+                                (list*
+                                 ,@(generic*-special-variable-precedence-order gf)
+                                 args))))))))
 
 ;; HACK. CCL's methods get some special info by way of an &method parameter. I'm not sure exactly
 ;; the nature of this parameter, but it seems like it gets filled out incorrectly on the inner
