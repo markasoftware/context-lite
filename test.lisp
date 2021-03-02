@@ -165,18 +165,79 @@ SOFTWARE.
 
   (is (do-the-thing)))
 
-(test defmethod-redefine)
+(test defmethod-redefine
+  "Check that redefining a method works"
+  (fmakunbound 'do-the-thing)
+  (defmethod* do-the-thing (k) ((*a* (eql 5)))
+    "hi")
+  (defmethod* do-the-thing (k) ((*a* (eql 5)))
+    "bye")
+  ;; ensure that there's only one
+  (is (= 1 (length (context-lite::generic*-inner-methods #'do-the-thing))))
+  ;; and ensure it's the right one
+  (is (string= "bye" (let ((*a* 5)) (do-the-thing nil))))
 
-(test defmethod-qualifiers)
+  (defmethod* do-the-thing ((k number)) ((*a* (eql 5))))
+  (is (= 2 (length (context-lite::generic*-inner-methods #'do-the-thing))))
+
+  (defmethod* do-the-thing ((k string)) ((*a* string) (*b* number))
+    99)
+  (defmethod* do-the-thing ((k string)) ((*b* number) (*a* string))
+    100)
+  (is (= 3 (length (context-lite::generic*-inner-methods #'do-the-thing))))
+  (is (= 100 (let ((*b* 9) (*a* "blah")) (do-the-thing "str"))))
+  (defmethod* do-the-thing :after ((k string)) ((*b* number) (*a* string))
+    100)
+  (is (= 4 (length (context-lite::generic*-inner-methods #'do-the-thing))))
+  )
+
+(test defmethod-qualifiers
+  "Check that qualifiers work as normal."
+  (fmakunbound 'do-the-thing)
+  (let (i)
+    (defmethod* do-the-thing :before () ((*a* number))
+      (incf i))
+    (defmethod* do-the-thing :before () ()
+      (incf i 3))
+    (defmethod* do-the-thing () ((*a* (eql 5)))
+      (setf i (* i 2)))
+    (defmethod* do-the-thing () ())
+    (defmethod* do-the-thing :after () ((*a* integer))
+      (setf i (* i 3)))
+
+    (setf i 5)
+    (do-the-thing)
+    (is (= 8 i))
+
+    (setf i 5)
+    (let ((*a* 5)) (do-the-thing))
+    (is (= 54 i))
+
+    (setf i 5)
+    (let ((*a* 1.5)) (do-the-thing))
+    (is (= 9 i))))
 
 (test defmethod-invalid-lambda-list
-  "Check that, when we provide a normal lambda list that's incompatible with ")
+  "Check that, when we provide a normal lambda list that's incompatible with the previous normal
+  lambda list, that an error is signaled and the existing method is not broken.")
 
 (test different-method-combination
   "Check that it still works when the method combination is not default."
-  ;; could be a problem because we first define the method on a fresh generic, which will call the
-  ;; wrong make-method-lambda.
-  )
+  (fmakunbound 'do-the-thing)
+  (defgeneric* do-the-thing (arg)
+    (:method-combination append))
+  (defmethod* do-the-thing append (arg) ()
+    (declare (ignore arg))
+    '(base))
+  (defmethod* do-the-thing append (arg) ((*a* (eql :baljeep)))
+    (declare (ignore arg))
+    '(baljeep))
+  (defmethod* do-the-thing append ((arg integer)) ()
+    '(integer))
+
+  (is (equal '(base) (do-the-thing nil)))
+  (is (equal '(baljeep base) (let ((*a* :baljeep)) (do-the-thing nil))))
+  (is (equal '(integer baljeep base) (let ((*a* :baljeep)) (do-the-thing 5)))))
 
 (run! 'context-lite)
 

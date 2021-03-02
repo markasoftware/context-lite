@@ -31,7 +31,7 @@
 
 (in-package #:context-lite)
 
-(define-condition special-lambda-list-error (error) ()
+(define-condition method*-redefinition (warning) ()
   (:documentation "Invalid special lambda list syntax."))
 
 (defclass generic*-function ()
@@ -264,14 +264,21 @@
     (lambda (ccl::&method methvar &rest args)
       (ccl::apply-with-method-context methvar method-function (nthcdr num-special-vars args)))))
 
+(defmethod wrapper-method-specializers ((gf generic*-function) (method method*))
+  "Given a method* and a gf that already has at least all the special variables required by the
+  method*, generate the full specializers list for the wrapper method."
+  (append (loop for gf-special-var in (generic*-special-variable-precedence-order gf)
+             collect (or (cdr (assoc gf-special-var (method*-special-variables method)))
+                                   (find-class t)))
+          (c2mop:method-specializers method)))
+
 (defmethod add-method* ((gf generic*-function) (method method*))
   ;; here's where we wrap the method* into a method
-  (let ((method-special-vars (method*-special-variables method)))
+  (let* ((method-special-vars (method*-special-variables method))
+         (method-special-var-names (mapcar #'car method-special-vars)))
     ;; first, make sure that the generic function knows about all our special variables
     (ensure-generic*-function-using-class
-     gf (generic*-name gf) :special-variables (mapcar #'car method-special-vars))
-    (unless (member method (generic*-inner-methods gf))
-      (push method (generic*-inner-methods gf)))
+     gf (generic*-name gf) :special-variables method-special-var-names)
     ;; now, wrap the method into a standard-method and add it normally
     (let* ((gf-special-vars (generic*-special-variable-precedence-order gf))
            (wrapper-method
@@ -281,16 +288,29 @@
               :qualifiers (method-qualifiers method)
               :function (wrap-method-function gf method (length gf-special-vars))
               :lambda-list (append gf-special-vars (c2mop:method-lambda-list method))
-              :specializers
-              (append (loop for gf-special-var in gf-special-vars
-                            collect (or (cdr (assoc gf-special-var method-special-vars))
-                                        (find-class t)))
-                      (c2mop:method-specializers method)))))
+              :specializers (wrapper-method-specializers gf method)))
+           ;; if this is a redefinition, here's the old method
+           (redefinition-old-method
+             (find-if (lambda (other-method)
+                        (and (equal (wrapper-method-specializers gf other-method)
+                                    (wrapper-method-specializers gf method))
+                             (equal (method-qualifiers other-method)
+                                    (method-qualifiers method))))
+                      (generic*-inner-methods gf))))
+      ;; ECL passes next-functions instead of next-methods to the method functions
       #-ecl
       (setf (gethash wrapper-method (generic*-wrapper-method-table gf)) method)
       #+ecl
       (setf (gethash (c2mop:method-function wrapper-method) (generic*-wrapper-method-table gf))
             (c2mop:method-function method))
+
+      (when redefinition-old-method
+        ;; TODO: signal a warning
+        ;; no need to remove the old wrapper; it will happen before add-method* is ever called on the
+        ;; same inner method again
+        (setf (generic*-inner-methods gf)
+              (remove redefinition-old-method (generic*-inner-methods gf))))
+      (push method (generic*-inner-methods gf))
       (add-method (generic*-gf gf) wrapper-method
                   ;; TODO: look into accessor methods
                   )
@@ -307,9 +327,17 @@
         declarations)
     (loop for option in options
           do (ecase (car option)
-               ((:special-variables :special-variable-precedence-order :argument-precedence-order
-                                    :documentation :method-combination)
+               ((:special-variables :special-variable-precedence-order :argument-precedence-order)
                 (push `',(cdr option) ensure-options)
+                (push (car option) ensure-options))
+               (:method-combination
+                (push `(c2mop:find-method-combination #'initialize-instance
+                                                      ',(cadr option)
+                                                      `(,,@(cddr option)))
+                      ensure-options)
+                (push (car option) ensure-options))
+               (:documentation
+                (push `',(cadr option) ensure-options)
                 (push (car option) ensure-options))
                ('declare
                 (setf declarations (nconc declarations (cdr option))))))
@@ -327,6 +355,10 @@
          (name-string (string block-name))
          (temp-gf-name (gensym name-string))
          vanilla-args                   ; with special lambda list removed
+         qualifiers                     ; has to be done manually because we can't defgeneric the
+                                        ; temporary method name, chicken and egg about knowing the
+                                        ; lambda list. So temp gf has standard method combination
+                                        ; and we tuck away the qualifiers.
          special-variables              ; List of (symbol . specializer-form)
          (actual-gf-var (gensym name-string))
          )
@@ -346,7 +378,7 @@
                                 ;; TODO: performance?
                                 (append
                                  (mapcar #'symbol-value
-                                         (generic*-special-variable-precedence-order actual-gf))
+                                         (generic*-special-variable-precedence-order ,actual-gf-var))
                                  args))
                          (call-next-method))))
                 (block ,block-name ,@body)))
@@ -359,10 +391,12 @@
             for (arg . rest) on args
             do (ecase state
                  (:pre
-                  (push arg vanilla-args)
                   ;; when we reach the lambda list, the next one is the special variable list
-                  (when (listp arg)
-                    (setf state :special)))
+                  (if (listp arg)
+                      (progn
+                        (push arg vanilla-args)
+                        (setf state :special))
+                      (push arg qualifiers)))
                  (:special
                   (setf special-variables
                         (loop for var in (c2mop:extract-lambda-list arg)
@@ -402,7 +436,7 @@
                               :special-variables
                               (list ,@(loop for (var . specializer-form) in special-variables
                                             collect `(cons ',var ,specializer-form)))
-                              :qualifiers (method-qualifiers temp-method)
+                              :qualifiers ',qualifiers
                               :specializers (c2mop:method-specializers temp-method)
                               :lambda-list (c2mop:method-lambda-list temp-method)
                               :documentation (documentation temp-method t)
