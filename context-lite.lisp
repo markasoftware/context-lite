@@ -86,7 +86,6 @@
             ,gf
             (lambda (&rest args)
               (apply ,inner-discriminating-function
-                     ;; TODO: specialize on a variable simply being bound and non-nil?
                      ,@(generic*-special-variable-precedence-order gf)
                      args))))))
 
@@ -147,6 +146,7 @@
                     :generic-function-class generic-function-class
                     :method-class method-class
                     (remove-from-plist options
+                                       :name
                                        :argument-precedence-order
                                        :special-variable-precedence-order
                                        :special-variables
@@ -192,10 +192,10 @@
         (setf (generic*-normal-lambda-list gf)
               normal-lambda-list-slot)
         (setf (generic*-name gf) fn-name)
+
         (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
           (add-all-wrapper-methods gf)))
 
-      ;; symbol not bound yet
       (setf (fdefinition fn-name) gf)
       gf)))
 
@@ -296,7 +296,6 @@
             (c2mop:method-function method))
 
       (when redefinition-old-method
-        ;; TODO: signal a warning
         ;; no need to remove the old wrapper; it will happen before add-method* is ever called on the
         ;; same inner method again
         (setf (generic*-inner-methods gf)
