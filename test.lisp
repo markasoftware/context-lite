@@ -219,7 +219,39 @@ SOFTWARE.
 
 (test defmethod-invalid-lambda-list
   "Check that, when we provide a normal lambda list that's incompatible with the previous normal
-  lambda list, that an error is signaled and the existing method is not broken.")
+  lambda list, that an error is signaled and the existing method is not broken."
+  (fmakunbound 'do-the-thing)
+  (defmethod* do-the-thing (arg1) ()
+    5)
+  (signals error
+    (defmethod* do-the-thing (arg1 arg2) ((*a* (eql 9)))
+      6))
+  ;; re-add all the wrapper methods, in case it changes anything
+  (is (= 5 (do-the-thing 99))))
+
+(test defmethod-invalid-lambda-list-2
+  (fmakunbound 'do-the-thing)
+  (defmethod* do-the-thing ((arg1 (eql 0)) arg2) ()
+    1)
+  (defmethod* do-the-thing (arg1 (arg2 (eql 0))) ()
+    2)
+  (is (= 1 (do-the-thing 0 0)))
+  (signals error
+    (defgeneric* do-the-thing (arg1 arg2 arg3)
+      (:argument-precedence-order arg2 arg1)))
+  ;; even if our code is broken and saves the wrong precedence order, it won't be observable unless
+  ;; we define a new method that triggers re-adding all the wrapper methods.
+  (defmethod* do-the-thing (arg1 arg2) ((*a* number)))
+  (is (= 1 (do-the-thing 0 0))))
+
+(test defmethod-no-bind
+  "Check that the special variables don't get a local binding during method body"
+  (fmakunbound 'do-the-thing)
+  (defmethod* do-the-thing () ((*a* (eql 0)))
+    (incf *a*))
+  (let ((*a* 0))
+    (do-the-thing)
+    (is (= 1 *a*))))
 
 (test different-method-combination
   "Check that it still works when the method combination is not default."

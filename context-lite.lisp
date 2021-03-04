@@ -31,9 +31,6 @@
 
 (in-package #:context-lite)
 
-(define-condition method*-redefinition (warning) ()
-  (:documentation "Invalid special lambda list syntax."))
-
 (defclass generic*-function ()
   ((name
     :accessor generic*-name
@@ -80,24 +77,6 @@
     :documentation "The special lambda list, each element (*special-variable-name* . specializer),
     where specializer is either a class metaobject or an eql-specializer (just like a normal method
     specializer)")))
-
-(defmacro accessor-transaction (accessors instance &body body)
-  "Save the value of the accessors before executing body. If an error is signaled during body,
-  revert the accessors back to their saved values. Each accessor must be a symbol naming an accessor
-  function."
-  (let ((instance-var (gensym "INSTANCE"))
-        (saved-value-list-var (gensym "SAVED-VALUE-LIST")))
-    `(let* ((,instance-var ,instance)
-            (,saved-value-list-var (list ,@(loop for accessor in accessors
-                                                 do (assert (symbolp accessor))
-                                                 collect `(,accessor ,instance-var)))))
-       (handler-bind
-           ((error (lambda (err)
-                     (declare (ignore err))
-                     ,@(loop for accessor in accessors
-                             nconc `((setf (,accessor ,instance-var) (car ,saved-value-list-var))
-                                     (setf ,saved-value-list-var (cdr ,saved-value-list-var)))))))
-         (progn ,@body)))))
 
 (defmethod generic*-install-discriminating-function ((gf generic*-function))
   (let ((inner-discriminating-function (c2mop:compute-discriminating-function (generic*-gf gf))))
@@ -146,67 +125,79 @@
        (lambda-list nil lambda-list-p)
        (generic-function-class 'standard-generic-function)
        (method-class 'standard-method)
-     &allow-other-keys)
+       &allow-other-keys)
 
-  (with-accessors ((normal-argument-precedence-order
-                    generic*-normal-argument-precedence-order)
-                   (special-variable-precedence-order-slot
-                    generic*-special-variable-precedence-order)
-                   (normal-lambda-list
-                    generic*-normal-lambda-list)
-                   (fn-name-slot
-                    fn-name))
-      gf
+  ;; what we do here is make temp variables for all the slots, get and set them in the body, and
+  ;; after the things that could throw errors, save it back to the actual slots. I would love to one
+  ;; day write a (with-accessors-transaction) macro that codifies this.
+  (let ((normal-argument-precedence-order-slot
+          (generic*-normal-argument-precedence-order gf))
+        (special-variable-precedence-order-slot
+          (generic*-special-variable-precedence-order gf))
+        (normal-lambda-list-slot
+          (generic*-normal-lambda-list gf)))
 
-    ;; use the identity of the special variable list to determine, later, whether or not we need to
-    ;; remove and regenerate all the wrapper methods, so that if a special variable list is
-    ;; specified but doesn't cause anything to change, nothing changes. (append) is guaranteed to
-    ;; change identity so this can't go wrong. This is to avoid n^2 performance with respect to the
-    ;; number of methods, when defining a new method. Likely a premature optimization.
-    (let ((original-sv-precedence-order special-variable-precedence-order-slot))
-      (setf (generic*-name gf) fn-name)
-      (when lambda-list-p ;; TODO: if the lambda list is invalid, the error will occur during the
-        ;; later ensure-generic-function-using-class call, but the lambda list
-        ;; will have already been permanently stored! Same goes for other params.
-        (setf normal-lambda-list lambda-list)
-        (setf normal-argument-precedence-order (lambda-list-required-arguments lambda-list)))
-      (when argument-precedence-order-p
-        (assert (= (length argument-precedence-order)
-                   (length (lambda-list-required-arguments normal-lambda-list)))
-                () "argument-precedence-order must have the same length as the normal lambda list")
-        (setf normal-argument-precedence-order argument-precedence-order))
-      (when special-variables-p
-        (setf special-variable-precedence-order-slot
-              (combine-special-variable-precedence-unordered
-               special-variable-precedence-order-slot
-               special-variables)))
-      (when special-variable-precedence-order-p
-        (setf special-variable-precedence-order-slot
-              (combine-special-variable-precedence-ordered
-               special-variable-precedence-order-slot
-               special-variable-precedence-order)))
-      (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
-        (remove-all-wrapper-methods gf))
-      (apply #'c2mop:ensure-generic-function-using-class
-             (generic*-gf gf) (c2mop:generic-function-name (generic*-gf gf))
-             :argument-precedence-order (append normal-argument-precedence-order
-                                                special-variable-precedence-order-slot)
-             :lambda-list (append special-variable-precedence-order-slot
-                                  normal-lambda-list)
-             :generic-function-class generic-function-class
-             :method-class method-class
-             (remove-from-plist options
-                                :argument-precedence-order
-                                :special-variable-precedence-order
-                                :special-variables
-                                :generic-function-class
-                                :lambda-list))
-      (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
-        (add-all-wrapper-methods gf))
-      gf)
+    (flet ((update-inner-gf ()
+             (apply #'c2mop:ensure-generic-function-using-class
+                    (generic*-gf gf) (c2mop:generic-function-name (generic*-gf gf))
+                    :argument-precedence-order (append normal-argument-precedence-order-slot
+                                                       special-variable-precedence-order-slot)
+                    :lambda-list (append special-variable-precedence-order-slot
+                                         normal-lambda-list-slot)
+                    :generic-function-class generic-function-class
+                    :method-class method-class
+                    (remove-from-plist options
+                                       :argument-precedence-order
+                                       :special-variable-precedence-order
+                                       :special-variables
+                                       :generic-function-class
+                                       :lambda-list))))
+    
+      ;; use the identity of the special variable list to determine, later, whether or not we need to
+      ;; remove and regenerate all the wrapper methods, so that if a special variable list is
+      ;; specified but doesn't cause anything to change, nothing changes. (append) is guaranteed to
+      ;; change identity so this can't go wrong. This is to avoid n^2 performance with respect to the
+      ;; number of methods, when defining a new method. Likely a premature optimization.
+      (let ((original-sv-precedence-order special-variable-precedence-order-slot))
+        (when lambda-list-p
+          (setf normal-lambda-list-slot lambda-list)
+          (setf normal-argument-precedence-order-slot (lambda-list-required-arguments lambda-list)))
+        (when argument-precedence-order-p
+          (assert (= (length argument-precedence-order)
+                     (length (lambda-list-required-arguments normal-lambda-list-slot)))
+                  () "argument-precedence-order must have the same length as the normal lambda list")
+          (setf normal-argument-precedence-order-slot argument-precedence-order))
+        ;; now, we try to update the lambda list and precedence order only, so that if there's any
+        ;; error with them, it is signaled before we (perhaps) remove methods.
+        (update-inner-gf)
+        (when special-variables-p
+          (setf special-variable-precedence-order-slot
+                (combine-special-variable-precedence-unordered
+                 special-variable-precedence-order-slot
+                 special-variables)))
+        (when special-variable-precedence-order-p
+          (setf special-variable-precedence-order-slot
+                (combine-special-variable-precedence-ordered
+                 special-variable-precedence-order-slot
+                 special-variable-precedence-order)))
+        (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
+          (remove-all-wrapper-methods gf))
 
-    ;; symbol not bound yet
-    (setf (fdefinition fn-name) gf)))
+        (update-inner-gf)
+        
+        (setf (generic*-normal-argument-precedence-order gf)
+              normal-argument-precedence-order-slot)
+        (setf (generic*-special-variable-precedence-order gf)
+              special-variable-precedence-order-slot)
+        (setf (generic*-normal-lambda-list gf)
+              normal-lambda-list-slot)
+        (setf (generic*-name gf) fn-name)
+        (unless (eq original-sv-precedence-order special-variable-precedence-order-slot)
+          (add-all-wrapper-methods gf)))
+
+      ;; symbol not bound yet
+      (setf (fdefinition fn-name) gf)
+      gf)))
 
 (defun ensure-generic*-function (fn-name &rest initargs)
   ;; TODO: custom class?
