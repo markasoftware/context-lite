@@ -308,6 +308,33 @@
       method)))
 
 (defmacro defgeneric* (name lambda-list &rest options)
+  "Create or modify a Context Lite generic*-function. Methods defined on a generic* function can
+  specialize on both explicit arguments and the value of special/dynamic variables at call time,
+  enabling context-based programming.
+
+  One method* may specialize on a different set of special variables than another method*. That
+  being said, the generic* function does internally store a list of all special variables that are
+  used in any method*, and the order of this list is important -- it determines which method*s take
+  precedence over others when multiple method*s are applicable. This \"special variable precedence
+  order\" can be controlled by providing the :special-variable-precedence-order option to
+  defgeneric*. When this option is specified, the internal list of special variables will be
+  reordered so that the given special variables appear in the given order. You need not mention
+  every special variable used by method*s of the generic* function in
+  :special-variable-precedence-order, but beware that in this case defgeneric* may be forced to
+  change the relative precedence order between the provided special variables and other special
+  variables.
+
+  The normal lambda-list precedence is controlled in the same way as for standard generic functions.
+  When multiple method*s that specialize on both their normal arguments and on special variables are
+  applicable, the normal arguments always take precedence.
+
+  If not given explicitly, the special variable precedence order is determined like so: Whenever a
+  method* is added, any special variables given in the method*'s special variable lambda list which
+  were not used in any previous method* (or previously provided to
+  :special-variable-precedence-order) are added to the end of the special variable precedence order,
+  in the order given in the special variable lambda list.
+
+  See also: defmethod*"
   ;; strategy: use defgeneric for all teh options supported by defgeneric, then call
   ;; ensure-generic-function to add special options
 
@@ -339,6 +366,35 @@
     `(ensure-generic*-function ',name ,@ensure-options)))
 
 (defmacro defmethod* (name &rest args)
+  "Define or redefine a Context Lite method*. A method* can specialize on both its explicit
+  arguments, and the value of special/dynamic variables at call time. The syntax is much the same as
+  for the standard defmethod, except that a (possibly empty) \"special variable lambda list\" must
+  be provided immediately after the normal lambda list. The special variable lambda list shall have
+  names of special variables in the place of argument names, and each argument can have class or eql
+  specializers, all with the usual syntax. A method is considered applicable when the explicit
+  arguments match the specializers in the normal lambda list, and when each special variable
+  mentioned in the special variable lambda list matches its specializer. No &optional, &key, etc
+  options are allowed in the special variable lambda list.
+
+  Much of the power of Context Lite stems from the fact that the method*s defined on a generic*
+  function may specialize on different sets of special variables. I.e., the special variable lambda
+  list for a method* may include special variables that are not mentioned in the special variable
+  lambda list of any other method* on the same generic* function.
+
+  Example:
+
+      (defvar *day-of-week* nil)
+
+      (defmethod* motd () ()
+        \"It's boring today.\")
+      (defmethod* motd () ((*day-of-week* (eql 'monday))
+        \"It's Monday!!!\")
+
+      (let ((*day-of-week* 'monday))
+        (motd) ; => \"It's Monday!!!\"
+        )
+ 
+  See the documentation for defgeneric* to learn how precedence order works."
   ;; strategy: create a vanilla method on a fresh generic function, so we can reuse most of the
   ;; implementations defmethod logic. Then, create a method* on the generic* object
   (let* ((block-name (if (consp name) (cadr name) name))

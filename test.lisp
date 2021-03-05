@@ -23,7 +23,8 @@ SOFTWARE.
 |#
 
 (defpackage #:context-lite/test
-  (:use #:cl #:context-lite #:fiveam))
+  (:use #:cl #:context-lite #:fiveam)
+  (:export context-lite))
 
 (in-package #:context-lite/test)
 
@@ -271,7 +272,7 @@ SOFTWARE.
   (is (equal '(baljeep base) (let ((*a* :baljeep)) (do-the-thing nil))))
   (is (equal '(integer baljeep base) (let ((*a* :baljeep)) (do-the-thing 5)))))
 
-(run! 'context-lite)
+;; (run! 'context-lite)
 
 ;; (defun crappy-benchmark (num-vars num-methods num-trials)
 ;;   (assert (plusp num-vars))

@@ -5,14 +5,16 @@ special/dynamic variables. For instance, if you are writing a method that should
 on Monday, but you do not wish to pass the day of the week as an explicit argument:
 
 #+BEGIN_SRC lisp
-      (defmethod* motd () ()
-        "It's boring today.")
-      (defmethod* motd () ((*day-of-week* (eql 'monday))
-        "It's Monday!!!")
+  (defvar *day-of-week* nil)
 
-      (let ((*day-of-week* 'monday))
-        (motd) ; => "It's Monday!!!"
-        )
+  (defmethod* motd () ()
+    "It's boring today.")
+  (defmethod* motd () ((*day-of-week* (eql 'monday))
+    "It's Monday!!!")
+
+  (let ((*day-of-week* 'monday))
+    (motd) ; => "It's Monday!!!"
+    )
 #+END_SRC
 
 Context Lite is in the same vein as [[https://github.com/pcostanza/contextl][ContextL]], but focuses only on generic functions and methods, not
@@ -28,8 +30,12 @@ Context Lite methods can handle a mix of "normal" arguments and special variable
 precedence orders.
 
 * Installation
-  TODO. For now, copy ~context-lite.lisp~ into your source tree.
+  Context Lite is available on Ultralisp and will soon be available on Quicklisp.
 * Usage
+  Context lite exports 2 macros: ~defgeneric*~ and ~defmethod*~. Read the docstrings to learn how to
+  use them. There's also an ~ensure-generic*-function~ which is similar to
+  ~ensure-generic-function~, but you probably shouldn't use it.
+
   Pulled from ~tests.lisp~:
 
   #+BEGIN_SRC lisp
@@ -139,19 +145,23 @@ precedence orders.
 
 #   Precedence issues are not unique to Context Lite, but they're more insidious since methods might
 #   not list all the special variables that /other/ methods specialize on in their lambda lists.
+** Running Tests
+   Load the ~context-lite/test~ system, then eval ~(fiveam:run! 'context-lite/test:context-lite)~.
 * Performance
   As you'd expect, Context Lite internally uses CLOS' method dispatch, so performance should be
   pretty good. The biggest cost comes when there is a long chain of next-methods, because Context
   Lite wraps each ~next-method~ in a closure.
 
   TODO: small benchmark
-* What's works
+* What works
   + ~declare~-ations and docstrings.
   + Implicit block around method body with correct name.
   + ~setf~ functions.
   + ~call-next-method~.
   + Method redefinitions overwrite the old one.
   + Argument precedence orders, including interaction between normal and special arguments.
+  + Tested in SBCL, CLISP, ECL, CCL, and ABCL. Theoretically should work in any fully MOP-compliant
+    implementation (but there's no such thing).
 * What doesn't work
   + Impossible to find or remove methods.
   + The generic function will signal an error if a special variable used by any method is unbound.
