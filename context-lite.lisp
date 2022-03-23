@@ -124,6 +124,7 @@
        (lambda-list nil lambda-list-p)
        (generic-function-class 'standard-generic-function)
        (method-class 'standard-method)
+       (documentation nil documentation-p)
        &allow-other-keys)
 
   ;; what we do here is make temp variables for all the slots, get and set them in the body, and
@@ -151,7 +152,8 @@
                                        :special-variable-precedence-order
                                        :special-variables
                                        :generic-function-class
-                                       :lambda-list))))
+                                       :lambda-list
+                                       :documentation))))
     
       ;; use the identity of the special variable list to determine, later, whether or not we need to
       ;; remove and regenerate all the wrapper methods, so that if a special variable list is
@@ -197,6 +199,8 @@
           (add-all-wrapper-methods gf)))
 
       (setf (fdefinition fn-name) gf)
+      (when documentation-p
+        (setf (documentation fn-name 'function) documentation))
       gf)))
 
 (defun ensure-generic*-function (fn-name &rest initargs)

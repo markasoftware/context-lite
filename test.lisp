@@ -272,6 +272,16 @@ SOFTWARE.
   (is (equal '(baljeep base) (let ((*a* :baljeep)) (do-the-thing nil))))
   (is (equal '(integer baljeep base) (let ((*a* :baljeep)) (do-the-thing 5)))))
 
+(test generic-function-documentation
+  "Check that the :documentation option to the generic function works."
+  (fmakunbound 'do-the-thing)
+  (defgeneric* do-the-thing (arg)
+  (:documentation "Does things. Lots of them."))
+  (is (string= (documentation 'do-the-thing 'function) "Does things. Lots of them."))
+  (defmethod* do-the-thing ((arg integer)) ((*a* (eql :baljeep)))
+  5)
+  (is (string= (documentation 'do-the-thing 'function) "Does things. Lots of them.")))
+
 ;; (run! 'context-lite)
 
 ;; (defun crappy-benchmark (num-vars num-methods num-trials)
